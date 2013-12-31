@@ -1,14 +1,16 @@
-package Mail::Box::IMAP4::SSL;
 use 5.006;
 use strict;
 use warnings;
 
-use base 'Mail::Box::IMAP4';
-use IO::Socket::SSL qw();
-use Mail::Reporter qw();
-use Mail::Transport::IMAP4 qw();
+package Mail::Box::IMAP4::SSL;
+# ABSTRACT: handle IMAP4 folders with SSL
+our $VERSION = '0.03'; # VERSION
 
-our $VERSION = '0.02'; 
+use superclass 'Mail::Box::IMAP4' => 2.079;
+use IO::Socket::SSL 1.12;
+use Mail::Reporter 2.079 qw();
+use Mail::Transport::IMAP4 2.079 qw();
+use Mail::IMAPClient 3.02;
 
 my $imaps_port = 993; # standard port for IMAP over SSL
 
@@ -17,7 +19,7 @@ my $imaps_port = 993; # standard port for IMAP over SSL
 #--------------------------------------------------------------------------#
 
 sub init {
-    my ($self, $args) = @_;
+    my ( $self, $args ) = @_;
 
     # until we're connected, mark as closed in case we exit early
     # (otherwise, Mail::Box::DESTROY will try to close/unlock, which dies)
@@ -35,175 +37,186 @@ sub init {
     # giving us a transport argument is an error since our only purpose
     # is to create the right kind of transport object
     if ( $args->{transporter} ) {
-        Mail::Reporter->log(ERROR => 
-            "The 'transporter' option is not valid for " . __PACKAGE__
-        );
+        Mail::Reporter->log(
+            ERROR => "The 'transporter' option is not valid for " . __PACKAGE__ );
         return;
     }
 
     # some arguments are required to connect to a server
-    for my $req ( qw/ server_name username password/ ) {
+    for my $req (qw/ server_name username password/) {
         if ( not defined $args->{$req} ) {
-            Mail::Reporter->log(ERROR =>  
-                "The '$req' option is required for " . __PACKAGE__ 
-            );
+            Mail::Reporter->log( ERROR => "The '$req' option is required for " . __PACKAGE__ );
             return;
         }
     }
 
     # trying to create the transport object
 
-    my $ssl_socket = IO::Socket::SSL->new(  
-        Proto    => 'tcp',
-        PeerAddr => $args->{server_name},
-        PeerPort => $args->{server_port},   
+    my $verify_mode =
+      $ENV{MAIL_BOX_IMAP4_SSL_NOVERIFY} ? SSL_VERIFY_NONE() : SSL_VERIFY_PEER();
+
+    my $ssl_socket = IO::Socket::SSL->new(
+        Proto           => 'tcp',
+        PeerAddr        => $args->{server_name},
+        PeerPort        => $args->{server_port},
+        SSL_verify_mode => $verify_mode,
     );
-    
-    unless ( $ssl_socket ) {
-        Mail::Reporter->log(ERROR => 
-            "Couldn't connect to '$args->{server_name}': " 
-            . IO::Socket::SSL::errstr()
-        );
+
+    unless ($ssl_socket) {
+        Mail::Reporter->log( ERROR => "Couldn't connect to '$args->{server_name}': "
+              . IO::Socket::SSL::errstr() );
         return;
     }
 
-    my $imap = Mail::IMAPClient->new( 
+    my $imap = Mail::IMAPClient->new(
         User     => $args->{username},
         Password => $args->{password},
         Socket   => $ssl_socket,
-        Uid      => 1,              # Mail::Transport::IMAP4 does this
-        Peek     => 1,              # Mail::Transport::IMAP4 does this
+        Uid      => 1,                # Mail::Transport::IMAP4 does this
+        Peek     => 1,                # Mail::Transport::IMAP4 does this
     );
     my $imap_err = $@;
-        
+
     unless ( $imap && $imap->IsAuthenticated ) {
-        Mail::Reporter->log( ERROR => 
-            "Login rejected for user '$args->{username}'"
-            . " on server '$args->{server_name}': $imap_err"
-        );
+        Mail::Reporter->log( ERROR => "Login rejected for user '$args->{username}'"
+              . " on server '$args->{server_name}': $imap_err" );
         return;
     }
 
-    $args->{transporter} = Mail::Transport::IMAP4->new(
-        imap_client => $imap,
-    );
-        
+    $args->{transporter} = Mail::Transport::IMAP4->new( imap_client => $imap, );
+
     unless ( $args->{transporter} ) {
-        Mail::Reporter->log( ERROR => 
-            "Error creating Mail::Transport::IMAP4 from the SSL connection."
-        );
+        Mail::Reporter->log(
+            ERROR => "Error creating Mail::Transport::IMAP4 from the SSL connection." );
         return;
     }
-    
+
     # now that we have a valid transporter, mark ourselves open
-    # and let the superclass take over
+    # and let the superclass initialize
     delete $self->{MB_is_closed};
-    return $self->SUPER::init($args); 
+    $self->SUPER::init($args);
+
 }
 
-1; #modules must return true
+sub type { 'imaps' }
+
+1;
 
 __END__
 
-#--------------------------------------------------------------------------#
-# pod documentation 
-#--------------------------------------------------------------------------#
+=pod
 
-=begin wikidoc
+=encoding UTF-8
 
-= NAME
+=head1 NAME
 
 Mail::Box::IMAP4::SSL - handle IMAP4 folders with SSL
 
-= VERSION
+=head1 VERSION
 
-This documentation describes version %%VERSION%%.
+version 0.03
 
-= INHERITANCE
+=head1 SYNOPSIS
 
-    Mail::Box::IMAP4::SSL
-      is a Mail::Box::IMAP4
-      is a Mail::Box::Net
-      is a Mail::Box
-      is a Mail::Reporter
+     # standalone
+     use Mail::Box::IMAP4::SSL;
+ 
+     my $folder = new Mail::Box::IMAP4::SSL(
+         username => 'johndoe',
+         password => 'wbuaqbr',
+         server_name => 'imap.example.com',
+     );
+ 
+     # with Mail::Box::Manager
+     use Mail::Box::Manager;
+ 
+     my $mbm = Mail::Box::Manager->new;
+     $mbm->registerType( imaps => 'Mail::Box::IMAP4::SSL' );
+ 
+     my $inbox = $mbm->open(
+         folder => 'imaps://johndoe:wbuaqbr@imap.example.com/INBOX',
+     );
 
-= SYNOPSIS
+=head1 DESCRIPTION
 
-    use Mail::Box::IMAP4::SSL;
-    my $folder = new Mail::Box::IMAP4::SSL(
-        username => 'johndoe',
-        password => 'x_marks_the_spot',
-        server_name => 'imap.example.com',
-    );
-        
-= DESCRIPTION
-
-This is a thin subclass of [Mail::Box::IMAP4] to provide IMAP over SSL (aka
+This is a thin subclass of L<Mail::Box::IMAP4> to provide IMAP over SSL (aka
 IMAPS).  It hides the complexity of setting up Mail::Box::IMAP4 with
-[IO::Socket::SSL], [Mail::IMAPClient] and [Mail::Transport::IMAP4].
+L<IO::Socket::SSL>, L<Mail::IMAPClient> and L<Mail::Transport::IMAP4>.
 
-In all other respects, it resembles [Mail::Box::IMAP4].  See that module
+In all other respects, it resembles L<Mail::Box::IMAP4>.  See that module
 for documentation.
 
-= METHODS
+=for Pod::Coverage init
 
+=head1 INHERITANCE
 
-== {Mail::Box::IMAP4::SSL->new( %options )}
+     Mail::Box::IMAP4::SSL
+       is a Mail::Box::IMAP4
+       is a Mail::Box::Net
+       is a Mail::Box
+       is a Mail::Reporter
 
-    my $folder = new Mail::Box::IMAP4::SSL(
-        username => 'johndoe',
-        password => 'x_marks_the_spot',
-        server_name => 'imap.example.com',
-        %other_options
-    );
+=head1 METHODS
 
-The {username}, {password} and {server_name} options arguments are required.
-The {server_port} option is automatically set to the standard IMAPS port 993,
-but can be changed if needed. See [Mail::Box::IMAP4] for additional options.
+=head2 C<<< Mail::Box::IMAP4::SSL->new( %options ) >>>
 
-Note: It is an error to provide a {transporter} options, as this class exists
-only to create an SSL-secured {transporter} for {Mail::Box::IMAP4}.
+     my $folder = new Mail::Box::IMAP4::SSL(
+         username => 'johndoe',
+         password => 'wbuaqbr',
+         server_name => 'imap.example.com',
+         %other_options
+     );
 
-= BUGS
+The C<<< username >>>, C<<< password >>> and C<<< server_name >>> options arguments are required.
+The C<<< server_port >>> option is automatically set to the standard IMAPS port 993,
+but can be changed if needed. See L<Mail::Box::IMAP4> for additional options.
 
-Please report any bugs or feature requests using the CPAN Request Tracker.  
-Bugs can be submitted through the web interface at 
-[http://rt.cpan.org/Dist/Display.html?Queue=Mail::Box::IMAP4::SSL]
+Note: It is an error to provide a C<<< transporter >>> options, as this class exists
+only to create an SSL-secured C<<< transporter >>> for C<<< Mail::Box::IMAP4 >>>.
 
-When submitting a bug or request, please include a test-file or a patch to an
-existing test-file that illustrates the bug or desired feature.
+=head1 SEE ALSO
 
-Please limit your bug/feature reports to SSL-specific issues.  All other
-issues should be directed to the maintainer of {Mail::Box::IMAP4}.
+=over
 
-= SEE ALSO
+=item *
 
-* [Mail::Box]
-* [Mail::Box::IMAP4]
+L<Mail::Box>
 
-= AUTHOR
+=item *
 
-David A. Golden (DAGOLDEN)
+L<Mail::Box::IMAP4>
 
-= COPYRIGHT AND LICENSE
+=back
 
-Copyright (c) 2007 by David A. Golden
+=for :stopwords cpan testmatrix url annocpan anno bugtracker rt cpants kwalitee diff irc mailto metadata placeholders metacpan
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at 
-[http://www.apache.org/licenses/LICENSE-2.0]
+=head1 SUPPORT
 
-Files produced as output though the use of this software, shall not be
-considered Derivative Works, but shall be considered the original work of the
-Licensor.
+=head2 Bugs / Feature Requests
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+Please report any bugs or feature requests through the issue tracker
+at L<https://github.com/dagolden/Mail-Box-IMAP4-SSL/issues>.
+You will be notified automatically of any progress on your issue.
 
-=end wikidoc
+=head2 Source Code
+
+This is open source software.  The code repository is available for
+public review and contribution under the terms of the license.
+
+L<https://github.com/dagolden/Mail-Box-IMAP4-SSL>
+
+  git clone https://github.com/dagolden/Mail-Box-IMAP4-SSL.git
+
+=head1 AUTHOR
+
+David Golden <dagolden@cpan.org>
+
+=head1 COPYRIGHT AND LICENSE
+
+This software is Copyright (c) 2013 by David Golden.
+
+This is free software, licensed under:
+
+  The Apache License, Version 2.0, January 2004
 
 =cut
